@@ -5,28 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GV Inventory Manager Pro</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore-compat.js"></script>
+    <script src="https://unpkg.com/lucide-react@0.469.0/dist/umd/lucide-react.min.js"></script>
   </head>
   <body class="bg-slate-50 text-slate-900 font-sans">
     <div id="root"></div>
-    <script type="module">
-      import React, { useEffect, useMemo, useState } from 'https://esm.sh/react@18';
-      import { createRoot } from 'https://esm.sh/react-dom@18/client';
-      import { initializeApp } from 'https://esm.sh/firebase@11.6.1/app';
-      import {
-        getFirestore,
-        collection,
-        onSnapshot,
-        doc,
-        setDoc,
-        deleteDoc,
-      } from 'https://esm.sh/firebase@11.6.1/firestore';
-      import {
-        getAuth,
-        signInAnonymously,
-        signInWithCustomToken,
-        onAuthStateChanged,
-      } from 'https://esm.sh/firebase@11.6.1/auth';
-      import {
+
+    <script type="text/babel">
+      const {
         Plus,
         Search,
         ChevronRight,
@@ -42,26 +33,41 @@
         Truck,
         Cloud,
         CheckCircle2,
-      } from 'https://esm.sh/lucide-react@0.469.0';
+      } = lucideReact;
 
-      // --- 1. FIREBASE CONFIGURATION ---
-      const firebaseConfig = JSON.parse(__firebase_config);
+      const firebaseConfig =
+        typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
 
-      const SOURCE_APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'gv-inventory-system-pro';
-
-      const app = initializeApp(firebaseConfig);
-      const auth = getAuth(app);
-      const db = getFirestore(app);
+      const SOURCE_APP_ID =
+        typeof __app_id !== 'undefined' ? __app_id : 'gv-inventory-system-pro';
 
       const App = () => {
-        const [user, setUser] = useState(null);
-        const [activeTab, setActiveTab] = useState('dashboard');
-        const [locationFilter, setLocationFilter] = useState('All');
-        const [searchTerm, setSearchTerm] = useState('');
-        const [isSyncing, setIsSyncing] = useState(false);
+        if (!firebaseConfig) {
+          return (
+            <div className="min-h-screen flex items-center justify-center">
+              <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-sm max-w-lg text-center">
+                <h1 className="text-xl font-black text-slate-800">Missing Firebase Config</h1>
+                <p className="text-sm text-slate-500 mt-2">
+                  This file expects <code>__firebase_config</code> to be injected at runtime. If
+                  you downloaded this directly from GitHub, open it through the environment that
+                  provides Firebase config, or replace the placeholder with your own config.
+                </p>
+              </div>
+            </div>
+          );
+        }
 
-        // --- LOCAL STATE (Source of Truth) ---
-        const [inventory, setInventory] = useState(() => {
+        const app = firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        const [user, setUser] = React.useState(null);
+        const [activeTab, setActiveTab] = React.useState('dashboard');
+        const [locationFilter, setLocationFilter] = React.useState('All');
+        const [searchTerm, setSearchTerm] = React.useState('');
+        const [isSyncing, setIsSyncing] = React.useState(false);
+
+        const [inventory, setInventory] = React.useState(() => {
           try {
             const saved = localStorage.getItem(`${SOURCE_APP_ID}_inventory`);
             return saved ? JSON.parse(saved) : [];
@@ -70,7 +76,7 @@
           }
         });
 
-        const [recipes, setRecipes] = useState(() => {
+        const [recipes, setRecipes] = React.useState(() => {
           try {
             const saved = localStorage.getItem(`${SOURCE_APP_ID}_recipes`);
             return saved ? JSON.parse(saved) : [];
@@ -79,7 +85,7 @@
           }
         });
 
-        const [globalRates, setGlobalRates] = useState(() => {
+        const [globalRates, setGlobalRates] = React.useState(() => {
           try {
             const saved = localStorage.getItem(`${SOURCE_APP_ID}_rates`);
             return saved
@@ -90,58 +96,58 @@
           }
         });
 
-        const [isLoading, setIsLoading] = useState(true);
-        const [isModalOpen, setIsModalOpen] = useState(false);
-        const [editingRecipe, setEditingRecipe] = useState(null);
-        const [isInventoryModalOpen, setIsInventoryModalOpen] = useState(false);
-        const [editingInventoryItem, setEditingInventoryItem] = useState(null);
+        const [isLoading, setIsLoading] = React.useState(true);
+        const [isModalOpen, setIsModalOpen] = React.useState(false);
+        const [editingRecipe, setEditingRecipe] = React.useState(null);
+        const [isInventoryModalOpen, setIsInventoryModalOpen] = React.useState(false);
+        const [editingInventoryItem, setEditingInventoryItem] = React.useState(null);
 
-        // Persistence to Local Storage
-        useEffect(() => {
+        React.useEffect(() => {
           localStorage.setItem(`${SOURCE_APP_ID}_inventory`, JSON.stringify(inventory));
         }, [inventory]);
 
-        useEffect(() => {
+        React.useEffect(() => {
           localStorage.setItem(`${SOURCE_APP_ID}_recipes`, JSON.stringify(recipes));
         }, [recipes]);
 
-        useEffect(() => {
+        React.useEffect(() => {
           localStorage.setItem(`${SOURCE_APP_ID}_rates`, JSON.stringify(globalRates));
         }, [globalRates]);
 
-        // --- AUTHENTICATION (RULE 3: Auth Before Queries) ---
-        useEffect(() => {
+        React.useEffect(() => {
           const initAuth = async () => {
             try {
               if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                 try {
-                  await signInWithCustomToken(auth, __initial_auth_token);
+                  await auth.signInWithCustomToken(__initial_auth_token);
                 } catch (tokenErr) {
                   console.error('Custom token failed, falling back to anonymous', tokenErr);
-                  await signInAnonymously(auth);
+                  await auth.signInAnonymously();
                 }
               } else {
-                await signInAnonymously(auth);
+                await auth.signInAnonymously();
               }
             } catch (err) {
               console.error('Auth failed', err);
             }
           };
           initAuth();
-          const unsubscribe = onAuthStateChanged(auth, setUser);
+          const unsubscribe = auth.onAuthStateChanged(setUser);
           return () => unsubscribe();
         }, []);
 
-        // --- DATA SYNCING ---
-        useEffect(() => {
+        React.useEffect(() => {
           if (!user) return;
 
           setIsSyncing(true);
 
-          // Using Strict Paths (RULE 1)
-          const invRef = collection(db, 'artifacts', SOURCE_APP_ID, 'public', 'data', 'inventory');
-          const unsubscribeInv = onSnapshot(
-            invRef,
+          const invRef = db
+            .collection('artifacts')
+            .doc(SOURCE_APP_ID)
+            .collection('public')
+            .doc('data')
+            .collection('inventory');
+          const unsubscribeInv = invRef.onSnapshot(
             (snapshot) => {
               const items = snapshot.docs.map((docSnapshot) => ({
                 id: docSnapshot.id,
@@ -158,9 +164,13 @@
             },
           );
 
-          const recRef = collection(db, 'artifacts', SOURCE_APP_ID, 'public', 'data', 'recipes');
-          const unsubscribeRec = onSnapshot(
-            recRef,
+          const recRef = db
+            .collection('artifacts')
+            .doc(SOURCE_APP_ID)
+            .collection('public')
+            .doc('data')
+            .collection('recipes');
+          const unsubscribeRec = recRef.onSnapshot(
             (snapshot) => {
               const items = snapshot.docs.map((docSnapshot) => ({
                 id: docSnapshot.id,
@@ -171,19 +181,16 @@
             (err) => console.error(err),
           );
 
-          const settingsRef = doc(
-            db,
-            'artifacts',
-            SOURCE_APP_ID,
-            'public',
-            'data',
-            'settings',
-            'global',
-          );
-          const unsubscribeSettings = onSnapshot(
-            settingsRef,
+          const settingsRef = db
+            .collection('artifacts')
+            .doc(SOURCE_APP_ID)
+            .collection('public')
+            .doc('data')
+            .collection('settings')
+            .doc('global');
+          const unsubscribeSettings = settingsRef.onSnapshot(
             (docSnap) => {
-              if (docSnap.exists()) {
+              if (docSnap.exists) {
                 setGlobalRates(docSnap.data());
               }
             },
@@ -197,7 +204,7 @@
           };
         }, [user]);
 
-        const processedRecipes = useMemo(() => {
+        const processedRecipes = React.useMemo(() => {
           return recipes.map((recipe) => {
             let totalBatchIngredientCost = 0;
             recipe.ingredients?.forEach((ing) => {
@@ -232,7 +239,7 @@
             item.supplier?.toLowerCase().includes(searchTerm.toLowerCase()),
         );
 
-        const supplierOptions = useMemo(() => {
+        const supplierOptions = React.useMemo(() => {
           return [...new Set(inventory.map((item) => item.supplier).filter(Boolean))].sort();
         }, [inventory]);
 
@@ -267,8 +274,14 @@
           setEditingRecipe(null);
 
           try {
-            const docRef = doc(db, 'artifacts', SOURCE_APP_ID, 'public', 'data', 'recipes', recipeId);
-            await setDoc(docRef, dataToSave);
+            const docRef = db
+              .collection('artifacts')
+              .doc(SOURCE_APP_ID)
+              .collection('public')
+              .doc('data')
+              .collection('recipes')
+              .doc(recipeId);
+            await docRef.set(dataToSave);
           } catch (err) {
             console.error('Firebase sync failed:', err);
           }
@@ -297,8 +310,14 @@
           setEditingInventoryItem(null);
 
           try {
-            const docRef = doc(db, 'artifacts', SOURCE_APP_ID, 'public', 'data', 'inventory', itemId);
-            await setDoc(docRef, dataToSave);
+            const docRef = db
+              .collection('artifacts')
+              .doc(SOURCE_APP_ID)
+              .collection('public')
+              .doc('data')
+              .collection('inventory')
+              .doc(itemId);
+            await docRef.set(dataToSave);
           } catch (err) {
             console.error('Firebase sync failed:', err);
           }
@@ -319,9 +338,14 @@
 
           try {
             const collectionName = type === 'recipe' ? 'recipes' : 'inventory';
-            await deleteDoc(
-              doc(db, 'artifacts', SOURCE_APP_ID, 'public', 'data', collectionName, id),
-            );
+            await db
+              .collection('artifacts')
+              .doc(SOURCE_APP_ID)
+              .collection('public')
+              .doc('data')
+              .collection(collectionName)
+              .doc(id)
+              .delete();
           } catch (err) {
             console.error('Firebase delete failed:', err);
           }
@@ -330,13 +354,14 @@
         const updateGlobalSettings = async (newRates) => {
           setGlobalRates(newRates);
           try {
-            await setDoc(
-              doc(db, 'artifacts', SOURCE_APP_ID, 'public', 'data', 'settings', 'global'),
-              newRates,
-              {
-                merge: true,
-              },
-            );
+            await db
+              .collection('artifacts')
+              .doc(SOURCE_APP_ID)
+              .collection('public')
+              .doc('data')
+              .collection('settings')
+              .doc('global')
+              .set(newRates, { merge: true });
           } catch (err) {
             console.error('Settings sync failed:', err);
           }
@@ -570,7 +595,12 @@
                 className="bg-blue-600 p-4 rounded-full text-white shadow-xl -mt-14 border-4 border-slate-50 hover:scale-110 active:scale-95 transition-all"
                 onClick={() => {
                   if (activeTab === 'inventory') {
-                    setEditingInventoryItem({ name: '', supplier: '', unit_price: 0, unit: 'kg' });
+                    setEditingInventoryItem({
+                      name: '',
+                      supplier: '',
+                      unit_price: 0,
+                      unit: 'kg',
+                    });
                     setIsInventoryModalOpen(true);
                   } else {
                     setEditingRecipe({
@@ -722,7 +752,9 @@
                               >
                                 <option value="">Choose item...</option>
                                 {inventory
-                                  .filter((item) => !ing.supplier || item.supplier === ing.supplier)
+                                  .filter(
+                                    (item) => !ing.supplier || item.supplier === ing.supplier,
+                                  )
                                   .map((item) => (
                                     <option key={item.id} value={item.id}>
                                       {item.name} (${parseFloat(item.unit_price || 0).toFixed(2)}/
@@ -775,8 +807,7 @@
                       onClick={handleSaveRecipe}
                       className="flex-1 bg-blue-600 text-white font-black py-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 transition-all hover:bg-blue-700 active:scale-95"
                     >
-                      <Save size={20} />{' '}
-                      {editingRecipe.id ? 'Save Changes' : 'Create Product'}
+                      <Save size={20} /> {editingRecipe.id ? 'Save Changes' : 'Create Product'}
                     </button>
                   </div>
                 </div>
@@ -867,7 +898,7 @@
       };
 
       const container = document.getElementById('root');
-      const root = createRoot(container);
+      const root = ReactDOM.createRoot(container);
       root.render(React.createElement(App));
     </script>
   </body>
