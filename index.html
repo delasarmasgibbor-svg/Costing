@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GV Inventory Manager Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="bg-slate-50 text-slate-900 font-sans">
+    <div id="root"></div>
+    <script type="module">
+      import React, { useEffect, useMemo, useState } from 'https://esm.sh/react@18';
+      import { createRoot } from 'https://esm.sh/react-dom@18/client';
+      import { initializeApp } from 'https://esm.sh/firebase@11.6.1/app';
+      import {
+        getFirestore,
+        collection,
+        onSnapshot,
+        doc,
+        setDoc,
+        deleteDoc,
+      } from 'https://esm.sh/firebase@11.6.1/firestore';
+      import {
+        getAuth,
+        signInAnonymously,
+        signInWithCustomToken,
+        onAuthStateChanged,
+      } from 'https://esm.sh/firebase@11.6.1/auth';
+      import {
+        Plus,
+        Search,
+        ChevronRight,
+        TrendingUp,
+        X,
+        Trash2,
+        Save,
+        Clock,
+        Settings2,
+        Package,
+        LayoutDashboard,
+        Store,
+        Truck,
+        Cloud,
+        CheckCircle2,
+      } from 'https://esm.sh/lucide-react@0.469.0';
+
+      // --- 1. FIREBASE CONFIGURATION ---
+      const firebaseConfig = JSON.parse(__firebase_config);
+
+      const SOURCE_APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'gv-inventory-system-pro';
+
+      const app = initializeApp(firebaseConfig);
+      const auth = getAuth(app);
+      const db = getFirestore(app);
+
+      const App = () => {
+        const [user, setUser] = useState(null);
+        const [activeTab, setActiveTab] = useState('dashboard');
+        const [locationFilter, setLocationFilter] = useState('All');
+        const [searchTerm, setSearchTerm] = useState('');
+        const [isSyncing, setIsSyncing] = useState(false);
+
+        // --- LOCAL STATE (Source of Truth) ---
+        const [inventory, setInventory] = useState(() => {
+          try {
+            const saved = localStorage.getItem(`${SOURCE_APP_ID}_inventory`);
+            return saved ? JSON.parse(saved) : [];
+          } catch {
+            return [];
+          }
+        });
+
+        const [recipes, setRecipes] = useState(() => {
+          try {
+            const saved = localStorage.getItem(`${SOURCE_APP_ID}_recipes`);
+            return saved ? JSON.parse(saved) : [];
+          } catch {
+            return [];
+          }
+        });
+
+        const [globalRates, setGlobalRates] = useState(() => {
+          try {
+            const saved = localStorage.getItem(`${SOURCE_APP_ID}_rates`);
+            return saved
+              ? JSON.parse(saved)
+              : { laborRatePerMin: 0.5, overheadPercent: 15.0 };
+          } catch {
+            return { laborRatePerMin: 0.5, overheadPercent: 15.0 };
+          }
+        });
+
+        const [isLoading, setIsLoading] = useState(true);
+        const [isModalOpen, setIsModalOpen] = useState(false);
+        const [editingRecipe, setEditingRecipe] = useState(null);
+        const [isInventoryModalOpen, setIsInventoryModalOpen] = useState(false);
+        const [editingInventoryItem, setEditingInventoryItem] = useState(null);
+
+        // Persistence to Local Storage
+        useEffect(() => {
+          localStorage.setItem(`${SOURCE_APP_ID}_inventory`, JSON.stringify(inventory));
+        }, [inventory]);
+
+        useEffect(() => {
+          localStorage.setItem(`${SOURCE_APP_ID}_recipes`, JSON.stringify(recipes));
+        }, [recipes]);
+
+        useEffect(() => {
+          localStorage.setItem(`${SOURCE_APP_ID}_rates`, JSON.stringify(globalRates));
+        }, [globalRates]);
+
+        // --- AUTHENTICATION (RULE 3: Auth Before Queries) ---
+        useEffect(() => {
+          const initAuth = async () => {
+            try {
+              if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                try {
+                  await signInWithCustomToken(auth, __initial_auth_token);
+                } catch (tokenErr) {
+                  console.error('Custom token failed, falling back to anonymous', tokenErr);
+                  await signInAnonymously(auth);
+                }
+              } else {
+                await signInAnonymously(auth);
+              }
+            } catch (err) {
+              console.error('Auth failed', err);
+            }
+          };
+          initAuth();
+          const unsubscribe = onAuthStateChanged(auth, setUser);
+          return () => unsubscribe();
+        }, []);
+
+        // --- DATA SYNCING ---
+        useEffect(() => {
+          if (!user) return;
+
+          setIsSyncing(true);
+
+          // Using Strict Paths (RULE 1)
+          const invRef = collection(db, 'artifacts', SOURCE_APP_ID, 'public', 'data', 'inventory');
+          const unsubscribeInv = onSnapshot(
+            invRef,
+            (snapshot) => {
+              const items = snapshot.docs.map((docSnapshot) => ({
+                id: docSnapshot.id,
+                ...docSnapshot.data(),
+              }));
+              setInventory(items);
+              setIsLoading(false);
+              setIsSyncing(false);
+            },
+            (err) => {
+              console.error('Inventory fetch error:', err);
+              setIsLoading(false);
+              setIsSyncing(false);
+            },
+          );
+
+          const recRef = collection(db, 'artifacts', SOURCE_APP_ID, 'public', 'data', 'recipes');
+          const unsubscribeRec = onSnapshot(
+            recRef,
+            (snapshot) => {
+              const items = snapshot.docs.map((docSnapshot) => ({
+                id: docSnapshot.id,
+                ...docSnapshot.data(),
+              }));
+              setRecipes(items);
+            },
+            (err) => console.error(err),
+          );
+
+          const settingsRef = doc(
+            db,
+            'artifacts',
+            SOURCE_APP_ID,
+            'public',
+            'data',
+            'settings',
+            'global',
+          );
+          const unsubscribeSettings = onSnapshot(
+            settingsRef,
+            (docSnap) => {
+              if (docSnap.exists()) {
+                setGlobalRates(docSnap.data());
+              }
+            },
+            (err) => console.error(err),
+          );
+
+          return () => {
+            unsubscribeInv();
+            unsubscribeRec();
+            unsubscribeSettings();
+          };
+        }, [user]);
+
+        const processedRecipes = useMemo(() => {
+          return recipes.map((recipe) => {
+            let totalBatchIngredientCost = 0;
+            recipe.ingredients?.forEach((ing) => {
+              const invItem = inventory.find((i) => i.id === ing.ingredient_id);
+              const price = invItem ? parseFloat(invItem.unit_price || 0) : 0;
+              totalBatchIngredientCost += price * parseFloat(ing.quantity || 0);
+            });
+            const yieldQty = parseFloat(recipe.yield_qty || 1);
+            const ingredientCostPerUnit = totalBatchIngredientCost / yieldQty;
+            const laborCostPerUnit =
+              parseFloat(recipe.labor_time_mins || 0) * globalRates.laborRatePerMin;
+            const baseCost = ingredientCostPerUnit + laborCostPerUnit;
+            const overheadAmount = baseCost * (globalRates.overheadPercent / 100);
+            const totalUnitCost = baseCost + overheadAmount;
+            const sellPrice = parseFloat(recipe.sell_price || 0);
+            const profit = sellPrice - totalUnitCost;
+            const margin = sellPrice > 0 ? (profit / sellPrice) * 100 : 0;
+
+            return { ...recipe, totalUnitCost, profit, margin };
+          });
+        }, [recipes, inventory, globalRates]);
+
+        const filteredRecipes = processedRecipes.filter((r) => {
+          const matchesLocation = locationFilter === 'All' || r.location === locationFilter;
+          const matchesSearch = r.name?.toLowerCase().includes(searchTerm.toLowerCase());
+          return matchesLocation && matchesSearch;
+        });
+
+        const filteredInventory = inventory.filter(
+          (item) =>
+            item.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            item.supplier?.toLowerCase().includes(searchTerm.toLowerCase()),
+        );
+
+        const supplierOptions = useMemo(() => {
+          return [...new Set(inventory.map((item) => item.supplier).filter(Boolean))].sort();
+        }, [inventory]);
+
+        const handleSaveRecipe = async () => {
+          if (!editingRecipe.name || !user) return;
+          const recipeId = editingRecipe.id || `recipe-${Date.now()}`;
+          const dataToSave = {
+            ...editingRecipe,
+            id: recipeId,
+            yield_qty: parseFloat(editingRecipe.yield_qty) || 1,
+            labor_time_mins: parseFloat(editingRecipe.labor_time_mins) || 0,
+            sell_price: parseFloat(editingRecipe.sell_price) || 0,
+            ingredients: (editingRecipe.ingredients || [])
+              .map((ing) => ({
+                ...ing,
+                quantity: parseFloat(ing.quantity) || 0,
+              }))
+              .filter((ing) => ing.ingredient_id && ing.quantity > 0),
+          };
+
+          setRecipes((prev) => {
+            const index = prev.findIndex((r) => r.id === recipeId);
+            if (index > -1) {
+              const next = [...prev];
+              next[index] = dataToSave;
+              return next;
+            }
+            return [...prev, dataToSave];
+          });
+
+          setIsModalOpen(false);
+          setEditingRecipe(null);
+
+          try {
+            const docRef = doc(db, 'artifacts', SOURCE_APP_ID, 'public', 'data', 'recipes', recipeId);
+            await setDoc(docRef, dataToSave);
+          } catch (err) {
+            console.error('Firebase sync failed:', err);
+          }
+        };
+
+        const handleSaveInventoryItem = async () => {
+          if (!editingInventoryItem.name || !user) return;
+          const itemId = editingInventoryItem.id || `item-${Date.now()}`;
+          const dataToSave = {
+            ...editingInventoryItem,
+            id: itemId,
+            unit_price: parseFloat(editingInventoryItem.unit_price) || 0,
+          };
+
+          setInventory((prev) => {
+            const index = prev.findIndex((i) => i.id === itemId);
+            if (index > -1) {
+              const next = [...prev];
+              next[index] = dataToSave;
+              return next;
+            }
+            return [...prev, dataToSave];
+          });
+
+          setIsInventoryModalOpen(false);
+          setEditingInventoryItem(null);
+
+          try {
+            const docRef = doc(db, 'artifacts', SOURCE_APP_ID, 'public', 'data', 'inventory', itemId);
+            await setDoc(docRef, dataToSave);
+          } catch (err) {
+            console.error('Firebase sync failed:', err);
+          }
+        };
+
+        const handleDeleteItem = async (type, id) => {
+          if (!confirm('Are you sure?')) return;
+
+          if (type === 'recipe') {
+            setRecipes((prev) => prev.filter((r) => r.id !== id));
+            setIsModalOpen(false);
+            setEditingRecipe(null);
+          } else {
+            setInventory((prev) => prev.filter((i) => i.id !== id));
+            setIsInventoryModalOpen(false);
+            setEditingInventoryItem(null);
+          }
+
+          try {
+            const collectionName = type === 'recipe' ? 'recipes' : 'inventory';
+            await deleteDoc(
+              doc(db, 'artifacts', SOURCE_APP_ID, 'public', 'data', collectionName, id),
+            );
+          } catch (err) {
+            console.error('Firebase delete failed:', err);
+          }
+        };
+
+        const updateGlobalSettings = async (newRates) => {
+          setGlobalRates(newRates);
+          try {
+            await setDoc(
+              doc(db, 'artifacts', SOURCE_APP_ID, 'public', 'data', 'settings', 'global'),
+              newRates,
+              {
+                merge: true,
+              },
+            );
+          } catch (err) {
+            console.error('Settings sync failed:', err);
+          }
+        };
+
+        return (
+          <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
+            <header className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
+              <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="bg-blue-600 p-2 rounded-lg text-white">
+                    <TrendingUp size={20} />
+                  </div>
+                  <div>
+                    <h1 className="text-xl font-bold tracking-tight">Hospital Costing</h1>
+                    <div className="flex items-center gap-1.5 text-[8px] font-black uppercase text-slate-400">
+                      {isSyncing ? (
+                        <span className="flex items-center gap-1 text-blue-500 animate-pulse">
+                          <Clock size={10} /> Syncing
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-emerald-500">
+                          <Cloud size={10} />
+                          <CheckCircle2 size={8} className="-ml-1" /> Active Save
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-4 flex-1 justify-end max-w-md ml-4">
+                  <div className="relative w-full">
+                    <Search
+                      className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                      size={18}
+                    />
+                    <input
+                      type="text"
+                      placeholder="Search database..."
+                      className="pl-10 pr-4 py-2 bg-slate-100 rounded-full text-sm border-none focus:ring-2 focus:ring-blue-500 w-full"
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+            </header>
+
+            <main className="max-w-7xl mx-auto px-4 py-8 pb-32">
+              {activeTab === 'dashboard' ? (
+                <>
+                  <div className="mb-8 bg-white border border-slate-200 rounded-3xl p-6 shadow-sm grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block">
+                        Labor Rate ($/min)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        className="w-full bg-slate-50 border-none rounded-2xl px-4 py-3 text-lg font-black"
+                        value={globalRates.laborRatePerMin}
+                        onChange={(e) =>
+                          updateGlobalSettings({
+                            ...globalRates,
+                            laborRatePerMin: parseFloat(e.target.value) || 0,
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block">
+                        Overhead (%)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        className="w-full bg-slate-50 border-none rounded-2xl px-4 py-3 text-lg font-black"
+                        value={globalRates.overheadPercent}
+                        onChange={(e) =>
+                          updateGlobalSettings({
+                            ...globalRates,
+                            overheadPercent: parseFloat(e.target.value) || 0,
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex bg-white p-1 rounded-xl border border-slate-200 w-fit shadow-sm mb-8">
+                    {['All', 'Glasshouse', 'Staff Dining'].map((loc) => (
+                      <button
+                        key={loc}
+                        onClick={() => setLocationFilter(loc)}
+                        className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+                          locationFilter === loc
+                            ? 'bg-blue-600 text-white shadow-sm'
+                            : 'text-slate-500 hover:bg-slate-50'
+                        }`}
+                      >
+                        {loc}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+                    <table className="w-full text-left">
+                      <thead className="bg-slate-50">
+                        <tr>
+                          <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase">
+                            Product
+                          </th>
+                          <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase">
+                            Cost
+                          </th>
+                          <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase">
+                            Price
+                          </th>
+                          <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase">
+                            Margin
+                          </th>
+                          <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase text-right">
+                            Edit
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {filteredRecipes.map((recipe) => (
+                          <tr key={recipe.id} className="hover:bg-slate-50 transition-colors group">
+                            <td className="px-6 py-4">
+                              <div className="font-bold">{recipe.name}</div>
+                              <div className="text-[10px] text-slate-400 font-bold uppercase">
+                                {recipe.location}
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 font-semibold text-slate-600">
+                              ${recipe.totalUnitCost.toFixed(2)}
+                            </td>
+                            <td className="px-6 py-4 font-bold">
+                              ${parseFloat(recipe.sell_price || 0).toFixed(2)}
+                            </td>
+                            <td className="px-6 py-4">
+                              <span
+                                className={`px-2 py-1 rounded text-xs font-black ${
+                                  recipe.margin >= 60
+                                    ? 'bg-emerald-100 text-emerald-700'
+                                    : 'bg-amber-100 text-amber-700'
+                                }`}
+                              >
+                                {recipe.margin.toFixed(0)}%
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-right">
+                              <button
+                                onClick={() => {
+                                  setEditingRecipe(recipe);
+                                  setIsModalOpen(true);
+                                }}
+                                className="text-slate-400 hover:text-blue-600 transition-transform group-hover:translate-x-1"
+                              >
+                                <ChevronRight size={18} />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {filteredRecipes.length === 0 && !isLoading && (
+                      <div className="p-12 text-center text-slate-400">No products found.</div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {filteredInventory.map((item) => (
+                    <div
+                      key={item.id}
+                      className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm hover:border-blue-400 transition-all group relative overflow-hidden"
+                    >
+                      <div className="flex justify-between items-start mb-4">
+                        <div className="bg-blue-50 p-3 rounded-2xl text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-colors shadow-sm">
+                          <Package size={24} />
+                        </div>
+                        <button
+                          onClick={() => {
+                            setEditingInventoryItem(item);
+                            setIsInventoryModalOpen(true);
+                          }}
+                          className="text-slate-300 hover:text-blue-600 bg-slate-50 p-2 rounded-xl transition-colors"
+                        >
+                          <Settings2 size={18} />
+                        </button>
+                      </div>
+                      <h3 className="text-lg font-black text-slate-800 leading-tight mb-1">
+                        {item.name}
+                      </h3>
+                      <div className="flex items-center gap-1.5 text-[10px] font-black text-slate-400 uppercase tracking-wider mb-6">
+                        <Truck size={12} className="text-blue-400" />{' '}
+                        {item.supplier || 'Generic Supplier'}
+                      </div>
+                      <div className="flex items-end justify-between border-t border-slate-50 pt-4">
+                        <div>
+                          <span className="text-2xl font-black text-slate-900">
+                            ${parseFloat(item.unit_price || 0).toFixed(2)}
+                          </span>
+                          <span className="text-[10px] text-slate-400 uppercase font-black ml-1">
+                            / {item.unit}
+                          </span>
+                        </div>
+                        <div className="bg-slate-50 px-3 py-1 rounded-full text-[10px] font-black text-slate-500 uppercase border border-slate-100">
+                          Active Stock
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </main>
+
+            <nav className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-white px-8 py-4 rounded-3xl shadow-2xl border border-slate-100 flex items-center gap-12 z-50">
+              <button
+                onClick={() => setActiveTab('dashboard')}
+                className={`flex flex-col items-center gap-1.5 transition-colors ${
+                  activeTab === 'dashboard'
+                    ? 'text-blue-600'
+                    : 'text-slate-300 hover:text-slate-500'
+                }`}
+              >
+                <LayoutDashboard size={24} strokeWidth={2.5} />
+                <span className="text-[9px] font-black uppercase tracking-widest">Pricing</span>
+              </button>
+              <button
+                className="bg-blue-600 p-4 rounded-full text-white shadow-xl -mt-14 border-4 border-slate-50 hover:scale-110 active:scale-95 transition-all"
+                onClick={() => {
+                  if (activeTab === 'inventory') {
+                    setEditingInventoryItem({ name: '', supplier: '', unit_price: 0, unit: 'kg' });
+                    setIsInventoryModalOpen(true);
+                  } else {
+                    setEditingRecipe({
+                      name: '',
+                      location: 'Glasshouse',
+                      yield_qty: 1,
+                      labor_time_mins: 5,
+                      sell_price: 0,
+                      ingredients: [],
+                    });
+                    setIsModalOpen(true);
+                  }
+                }}
+              >
+                <Plus size={28} strokeWidth={4} />
+              </button>
+              <button
+                onClick={() => setActiveTab('inventory')}
+                className={`flex flex-col items-center gap-1.5 transition-colors ${
+                  activeTab === 'inventory'
+                    ? 'text-blue-600'
+                    : 'text-slate-300 hover:text-slate-500'
+                }`}
+              >
+                <Store size={24} strokeWidth={2.5} />
+                <span className="text-[9px] font-black uppercase tracking-widest">Stock</span>
+              </button>
+            </nav>
+
+            {/* MODALS */}
+            {isModalOpen && editingRecipe && (
+              <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[100]">
+                <div className="bg-white rounded-3xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
+                  <div className="p-6 border-b flex justify-between items-center bg-slate-50">
+                    <h2 className="text-xl font-black">
+                      {editingRecipe.id ? 'Edit Product' : 'New Product'}
+                    </h2>
+                    <button
+                      onClick={() => {
+                        setIsModalOpen(false);
+                        setEditingRecipe(null);
+                      }}
+                      className="text-slate-400 hover:text-slate-600 bg-white p-2 rounded-full shadow-sm"
+                    >
+                      <X size={20} />
+                    </button>
+                  </div>
+                  <div className="p-6 overflow-y-auto flex-1 space-y-6">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="col-span-2">
+                        <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-wider">
+                          Product Name
+                        </label>
+                        <input
+                          className="w-full bg-slate-50 p-4 rounded-2xl border-none font-black text-slate-800 focus:ring-2 focus:ring-blue-500"
+                          value={editingRecipe.name}
+                          onChange={(e) =>
+                            setEditingRecipe({ ...editingRecipe, name: e.target.value })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-wider">
+                          Location
+                        </label>
+                        <select
+                          className="w-full bg-slate-50 p-4 rounded-2xl border-none font-black text-slate-800 appearance-none cursor-pointer"
+                          value={editingRecipe.location}
+                          onChange={(e) =>
+                            setEditingRecipe({ ...editingRecipe, location: e.target.value })
+                          }
+                        >
+                          <option>Glasshouse</option>
+                          <option>Staff Dining</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-wider">
+                          Sell Price ($)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          className="w-full bg-slate-50 p-4 rounded-2xl border-none font-black text-slate-800"
+                          value={editingRecipe.sell_price}
+                          onChange={(e) =>
+                            setEditingRecipe({ ...editingRecipe, sell_price: e.target.value })
+                          }
+                        />
+                      </div>
+                    </div>
+
+                    <div className="border-t border-slate-100 pt-6">
+                      <div className="flex justify-between items-center mb-4">
+                        <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+                          Recipe Breakdown
+                        </label>
+                        <button
+                          onClick={() =>
+                            setEditingRecipe({
+                              ...editingRecipe,
+                              ingredients: [
+                                ...(editingRecipe.ingredients || []),
+                                { ingredient_id: '', quantity: 0 },
+                              ],
+                            })
+                          }
+                          className="text-blue-600 text-[10px] font-black uppercase flex items-center gap-1 hover:bg-blue-50 px-3 py-1 rounded-full transition-colors"
+                        >
+                          <Plus size={14} /> Add Ingredient
+                        </button>
+                      </div>
+                      <div className="space-y-3">
+                        {(editingRecipe.ingredients || []).map((ing, idx) => {
+                          const ingredientItem = inventory.find(
+                            (item) => item.id === ing.ingredient_id,
+                          );
+                          const ingredientPrice = parseFloat(ingredientItem?.unit_price || 0);
+                          return (
+                            <div
+                              key={idx}
+                              className="flex gap-2 items-center bg-slate-50 p-2 rounded-2xl"
+                            >
+                              <select
+                                className="w-40 bg-white p-3 rounded-xl border-none font-black text-xs appearance-none cursor-pointer shadow-sm"
+                                value={ing.supplier || ''}
+                                onChange={(e) => {
+                                  const newIngs = [...editingRecipe.ingredients];
+                                  newIngs[idx].supplier = e.target.value;
+                                  newIngs[idx].ingredient_id = '';
+                                  setEditingRecipe({ ...editingRecipe, ingredients: newIngs });
+                                }}
+                              >
+                                <option value="">Supplier</option>
+                                {supplierOptions.map((supplier) => (
+                                  <option key={supplier} value={supplier}>
+                                    {supplier}
+                                  </option>
+                                ))}
+                              </select>
+                              <select
+                                className="flex-1 bg-white p-3 rounded-xl border-none font-black text-xs appearance-none cursor-pointer shadow-sm"
+                                value={ing.ingredient_id}
+                                onChange={(e) => {
+                                  const newIngs = [...editingRecipe.ingredients];
+                                  newIngs[idx].ingredient_id = e.target.value;
+                                  setEditingRecipe({ ...editingRecipe, ingredients: newIngs });
+                                }}
+                              >
+                                <option value="">Choose item...</option>
+                                {inventory
+                                  .filter((item) => !ing.supplier || item.supplier === ing.supplier)
+                                  .map((item) => (
+                                    <option key={item.id} value={item.id}>
+                                      {item.name} (${parseFloat(item.unit_price || 0).toFixed(2)}/
+                                      {item.unit})
+                                    </option>
+                                  ))}
+                              </select>
+                              <input
+                                type="number"
+                                step="0.001"
+                                placeholder="Qty"
+                                className="w-24 bg-white p-3 rounded-xl border-none font-black text-xs shadow-sm"
+                                value={ing.quantity}
+                                onChange={(e) => {
+                                  const newIngs = [...editingRecipe.ingredients];
+                                  newIngs[idx].quantity = e.target.value;
+                                  setEditingRecipe({ ...editingRecipe, ingredients: newIngs });
+                                }}
+                              />
+                              <div className="w-24 text-right text-[10px] font-black text-slate-500">
+                                ${ingredientPrice.toFixed(2)}
+                              </div>
+                              <button
+                                onClick={() => {
+                                  const newIngs = editingRecipe.ingredients.filter(
+                                    (_, i) => i !== idx,
+                                  );
+                                  setEditingRecipe({ ...editingRecipe, ingredients: newIngs });
+                                }}
+                                className="text-slate-300 hover:text-red-500 p-2"
+                              >
+                                <X size={18} />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="p-6 bg-slate-50 border-t flex gap-3">
+                    {editingRecipe.id && (
+                      <button
+                        onClick={() => handleDeleteItem('recipe', editingRecipe.id)}
+                        className="p-4 bg-white text-red-500 rounded-2xl shadow-sm hover:bg-red-50 transition-colors"
+                      >
+                        <Trash2 size={20} />
+                      </button>
+                    )}
+                    <button
+                      onClick={handleSaveRecipe}
+                      className="flex-1 bg-blue-600 text-white font-black py-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 transition-all hover:bg-blue-700 active:scale-95"
+                    >
+                      <Save size={20} />{' '}
+                      {editingRecipe.id ? 'Save Changes' : 'Create Product'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {isInventoryModalOpen && editingInventoryItem && (
+              <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[100]">
+                <div className="bg-white rounded-[2.5rem] w-full max-w-md shadow-2xl overflow-hidden">
+                  <div className="p-8 border-b flex justify-between items-center bg-slate-50">
+                    <h2 className="text-xl font-black">
+                      {editingInventoryItem.id ? 'Edit Stock' : 'New Stock Item'}
+                    </h2>
+                    <button
+                      onClick={() => {
+                        setIsInventoryModalOpen(false);
+                        setEditingInventoryItem(null);
+                      }}
+                      className="text-slate-400 hover:text-slate-600"
+                    >
+                      <X size={24} />
+                    </button>
+                  </div>
+                  <div className="p-8 space-y-5">
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">
+                        Item Name
+                      </label>
+                      <input
+                        className="w-full bg-slate-50 p-5 rounded-2xl border-none font-black text-slate-800"
+                        value={editingInventoryItem.name}
+                        onChange={(e) =>
+                          setEditingInventoryItem({
+                            ...editingInventoryItem,
+                            name: e.target.value,
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">
+                          Price ($)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          className="w-full bg-slate-50 p-5 rounded-2xl border-none font-black text-slate-800"
+                          value={editingInventoryItem.unit_price}
+                          onChange={(e) =>
+                            setEditingInventoryItem({
+                              ...editingInventoryItem,
+                              unit_price: e.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-widest">
+                          Unit
+                        </label>
+                        <input
+                          className="w-full bg-slate-50 p-5 rounded-2xl border-none font-black text-slate-800"
+                          value={editingInventoryItem.unit}
+                          onChange={(e) =>
+                            setEditingInventoryItem({
+                              ...editingInventoryItem,
+                              unit: e.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="p-8 bg-slate-50 border-t flex gap-3">
+                    <button
+                      onClick={handleSaveInventoryItem}
+                      className="flex-1 bg-blue-600 text-white font-black py-5 rounded-2xl shadow-xl flex items-center justify-center gap-2"
+                    >
+                      <Save size={24} /> Save Stock
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      };
+
+      const container = document.getElementById('root');
+      const root = createRoot(container);
+      root.render(React.createElement(App));
+    </script>
+  </body>
+</html>
